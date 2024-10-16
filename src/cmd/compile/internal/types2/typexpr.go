@@ -41,11 +41,19 @@ func (check *Checker) ident(x *operand, e *syntax.Name, def *TypeName, wantType 
 			check.errorf(e, UndeclaredName, "undefined: %s", e.Value)
 		}
 		return
-	case universeAny, universeComparable:
+	case universeComparable:
 		if !check.verifyVersionf(e, go1_18, "predeclared %s", e.Value) {
 			return // avoid follow-on errors
 		}
 	}
+	// Because the representation of any depends on gotypesalias, we don't check
+	// pointer identity here.
+	if obj.Name() == "any" && obj.Parent() == Universe {
+		if !check.verifyVersionf(e, go1_18, "predeclared %s", e.Value) {
+			return // avoid follow-on errors
+		}
+	}
+
 	check.recordUse(e, obj)
 
 	// If we want a type but don't have one, stop right here and avoid potential problems
@@ -108,7 +116,7 @@ func (check *Checker) ident(x *operand, e *syntax.Name, def *TypeName, wantType 
 		x.mode = constant_
 
 	case *TypeName:
-		if !check.enableAlias && check.isBrokenAlias(obj) {
+		if !check.conf.EnableAlias && check.isBrokenAlias(obj) {
 			check.errorf(e, InvalidDeclCycle, "invalid use of type alias %s in recursive type (see go.dev/issue/50729)", obj.name)
 			return
 		}
@@ -445,6 +453,10 @@ func (check *Checker) instantiatedType(x syntax.Expr, xlist []syntax.Expr, def *
 		}()
 	}
 
+	defer func() {
+		setDefType(def, res)
+	}()
+
 	var cause string
 	gtyp := check.genericType(x, &cause)
 	if cause != "" {
@@ -454,21 +466,23 @@ func (check *Checker) instantiatedType(x syntax.Expr, xlist []syntax.Expr, def *
 		return gtyp // error already reported
 	}
 
+	// evaluate arguments
+	targs := check.typeList(xlist)
+	if targs == nil {
+		return Typ[Invalid]
+	}
+
+	if orig, _ := gtyp.(*Alias); orig != nil {
+		return check.instance(x.Pos(), orig, targs, nil, check.context())
+	}
+
 	orig := asNamed(gtyp)
 	if orig == nil {
 		panic(fmt.Sprintf("%v: cannot instantiate %v", x.Pos(), gtyp))
 	}
 
-	// evaluate arguments
-	targs := check.typeList(xlist)
-	if targs == nil {
-		setDefType(def, Typ[Invalid]) // avoid errors later due to lazy instantiation
-		return Typ[Invalid]
-	}
-
 	// create the instance
 	inst := asNamed(check.instance(x.Pos(), orig, targs, nil, check.context()))
-	setDefType(def, inst)
 
 	// orig.tparams may not be set up, so we need to do expansion later.
 	check.later(func() {

@@ -14,7 +14,6 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -1790,7 +1789,7 @@ func testWalkSymlink(t *testing.T, mklink func(target, link string) error) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(visited)
+	slices.Sort(visited)
 	want := []string{".", "link"}
 	if fmt.Sprintf("%q", visited) != fmt.Sprintf("%q", want) {
 		t.Errorf("unexpected paths visited %q, want %q", visited, want)
@@ -1978,5 +1977,18 @@ func TestEscaping(t *testing.T) {
 		for _, e := range ents {
 			t.Fatalf("found: %v", e.Name())
 		}
+	}
+}
+
+func TestEvalSymlinksTooManyLinks(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+	dir := filepath.Join(t.TempDir(), "dir")
+	err := os.Symlink(dir, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = filepath.EvalSymlinks(dir)
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }

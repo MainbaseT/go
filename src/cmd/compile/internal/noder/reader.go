@@ -427,7 +427,9 @@ func (pr *pkgReader) typIdx(info typeInfo, dict *readerDict, wrapped bool) *type
 	r.dict = dict
 
 	typ := r.doTyp()
-	assert(typ != nil)
+	if typ == nil {
+		base.Fatalf("doTyp returned nil for info=%v", info)
+	}
 
 	// For recursive type declarations involving interfaces and aliases,
 	// above r.doTyp() call may have already set pr.typs[idx], so just
@@ -741,7 +743,26 @@ func (pr *pkgReader) objIdxMayFail(idx pkgbits.Index, implicits, explicits []*ty
 
 	case pkgbits.ObjAlias:
 		name := do(ir.OTYPE, false)
-		setType(name, r.typ())
+
+		// Clumsy dance: the r.typ() call here might recursively find this
+		// type alias name, before we've set its type (#66873). So we
+		// temporarily clear sym.Def and then restore it later, if still
+		// unset.
+		hack := sym.Def == name
+		if hack {
+			sym.Def = nil
+		}
+		typ := r.typ()
+		if hack {
+			if sym.Def != nil {
+				name = sym.Def.(*ir.Name)
+				assert(name.Type() == typ)
+				return name, nil
+			}
+			sym.Def = name
+		}
+
+		setType(name, typ)
 		name.SetAlias(true)
 		return name, nil
 
@@ -1176,7 +1197,18 @@ func (r *reader) linkname(name *ir.Name) {
 		lsym.SymIdx = int32(idx)
 		lsym.Set(obj.AttrIndexed, true)
 	} else {
-		name.Sym().Linkname = r.String()
+		linkname := r.String()
+		sym := name.Sym()
+		sym.Linkname = linkname
+		if sym.Pkg == types.LocalPkg && linkname != "" {
+			// Mark linkname in the current package. We don't mark the
+			// ones that are imported and propagated (e.g. through
+			// inlining or instantiation, which are marked in their
+			// corresponding packages). So we can tell in which package
+			// the linkname is used (pulled), and the linker can
+			// make a decision for allowing or disallowing it.
+			sym.Linksym().Set(obj.AttrLinkname, true)
+		}
 	}
 }
 
@@ -2672,7 +2704,7 @@ func (r *reader) syntheticClosure(origPos src.XPos, typ *types.Type, ifaceHack b
 		return false
 	}
 
-	fn := r.inlClosureFunc(origPos, typ)
+	fn := r.inlClosureFunc(origPos, typ, ir.OCLOSURE)
 	fn.SetWrapper(true)
 
 	clo := fn.OClosure
@@ -2965,7 +2997,7 @@ func (r *reader) compLit() ir.Node {
 			*elemp, elemp = kv, &kv.Value
 		}
 
-		*elemp = wrapName(r.pos(), r.expr())
+		*elemp = r.expr()
 	}
 
 	lit := typecheck.Expr(ir.NewCompLitExpr(pos, ir.OCOMPLIT, typ, elems))
@@ -2978,23 +3010,6 @@ func (r *reader) compLit() ir.Node {
 		lit.SetType(typ0)
 	}
 	return lit
-}
-
-func wrapName(pos src.XPos, x ir.Node) ir.Node {
-	// These nodes do not carry line numbers.
-	// Introduce a wrapper node to give them the correct line.
-	switch x.Op() {
-	case ir.OTYPE, ir.OLITERAL:
-		if x.Sym() == nil {
-			break
-		}
-		fallthrough
-	case ir.ONAME, ir.ONONAME, ir.ONIL:
-		p := ir.NewParenExpr(pos, x)
-		p.SetImplicit(true)
-		return p
-	}
-	return x
 }
 
 func (r *reader) funcLit() ir.Node {
@@ -3020,8 +3035,12 @@ func (r *reader) funcLit() ir.Node {
 	origPos := r.pos()
 	sig := r.signature(nil)
 	r.suppressInlPos--
+	why := ir.OCLOSURE
+	if r.Bool() {
+		why = ir.ORANGE
+	}
 
-	fn := r.inlClosureFunc(origPos, sig)
+	fn := r.inlClosureFunc(origPos, sig, why)
 
 	fn.ClosureVars = make([]*ir.Name, 0, r.Len())
 	for len(fn.ClosureVars) < cap(fn.ClosureVars) {
@@ -3047,14 +3066,14 @@ func (r *reader) funcLit() ir.Node {
 
 // inlClosureFunc constructs a new closure function, but correctly
 // handles inlining.
-func (r *reader) inlClosureFunc(origPos src.XPos, sig *types.Type) *ir.Func {
+func (r *reader) inlClosureFunc(origPos src.XPos, sig *types.Type, why ir.Op) *ir.Func {
 	curfn := r.inlCaller
 	if curfn == nil {
 		curfn = r.curfn
 	}
 
 	// TODO(mdempsky): Remove hard-coding of typecheck.Target.
-	return ir.NewClosureFunc(origPos, r.inlPos(origPos), ir.OCLOSURE, sig, curfn, typecheck.Target)
+	return ir.NewClosureFunc(origPos, r.inlPos(origPos), why, sig, curfn, typecheck.Target)
 }
 
 func (r *reader) exprList() []ir.Node {
@@ -3701,10 +3720,13 @@ func (r *reader) needWrapper(typ *types.Type) {
 		return
 	}
 
+	// Special case: runtime must define error even if imported packages mention it (#29304).
+	forceNeed := typ == types.ErrorType && base.Ctxt.Pkgpath == "runtime"
+
 	// If a type was found in an imported package, then we can assume
 	// that package (or one of its transitive dependencies) already
 	// generated method wrappers for it.
-	if r.importedDef() {
+	if r.importedDef() && !forceNeed {
 		haveWrapperTypes = append(haveWrapperTypes, typ)
 	} else {
 		needWrapperTypes = append(needWrapperTypes, typ)

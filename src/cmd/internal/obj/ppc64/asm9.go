@@ -429,9 +429,9 @@ var optabBase = []Optab{
 	{as: AMTVSRD, a1: C_REG, a6: C_FREG, type_: 104, size: 4},
 	{as: AMTVSRDD, a1: C_REG, a2: C_REG, a6: C_VSREG, type_: 104, size: 4},
 
-	/* VSX logical */
-	{as: AXXLAND, a1: C_VSREG, a2: C_VSREG, a6: C_VSREG, type_: 90, size: 4}, /* vsx and, xx3-form */
-	{as: AXXLOR, a1: C_VSREG, a2: C_VSREG, a6: C_VSREG, type_: 90, size: 4},  /* vsx or, xx3-form */
+	/* VSX xx3-form */
+	{as: AXXLAND, a1: C_FREG, a2: C_FREG, a6: C_FREG, type_: 90, size: 4},    /* vsx xx3-form (FPR usage) */
+	{as: AXXLAND, a1: C_VSREG, a2: C_VSREG, a6: C_VSREG, type_: 90, size: 4}, /* vsx xx3-form */
 
 	/* VSX select */
 	{as: AXXSEL, a1: C_VSREG, a2: C_VSREG, a3: C_VSREG, a6: C_VSREG, type_: 91, size: 4}, /* vsx select, xx4-form */
@@ -472,12 +472,12 @@ var optabBase = []Optab{
 
 	{as: ACMP, a1: C_REG, a6: C_REG, type_: 70, size: 4},
 	{as: ACMP, a1: C_REG, a2: C_CREG, a6: C_REG, type_: 70, size: 4},
-	{as: ACMP, a1: C_REG, a6: C_S16CON, type_: 71, size: 4},
-	{as: ACMP, a1: C_REG, a2: C_CREG, a6: C_S16CON, type_: 71, size: 4},
+	{as: ACMP, a1: C_REG, a6: C_S16CON, type_: 70, size: 4},
+	{as: ACMP, a1: C_REG, a2: C_CREG, a6: C_S16CON, type_: 70, size: 4},
 	{as: ACMPU, a1: C_REG, a6: C_REG, type_: 70, size: 4},
 	{as: ACMPU, a1: C_REG, a2: C_CREG, a6: C_REG, type_: 70, size: 4},
-	{as: ACMPU, a1: C_REG, a6: C_U16CON, type_: 71, size: 4},
-	{as: ACMPU, a1: C_REG, a2: C_CREG, a6: C_U16CON, type_: 71, size: 4},
+	{as: ACMPU, a1: C_REG, a6: C_U16CON, type_: 70, size: 4},
+	{as: ACMPU, a1: C_REG, a2: C_CREG, a6: C_U16CON, type_: 70, size: 4},
 	{as: AFCMPO, a1: C_FREG, a6: C_FREG, type_: 70, size: 4},
 	{as: AFCMPO, a1: C_FREG, a2: C_CREG, a6: C_FREG, type_: 70, size: 4},
 	{as: ATW, a1: C_32CON, a2: C_REG, a6: C_REG, type_: 60, size: 4},
@@ -1679,16 +1679,17 @@ func buildop(ctxt *obj.Link) {
 			opset(AMTVSRWZ, r0)
 			opset(AMTVSRWS, r0)
 
-		case AXXLAND: /* xxland, xxlandc, xxleqv, xxlnand */
+		case AXXLAND:
 			opset(AXXLANDC, r0)
 			opset(AXXLEQV, r0)
 			opset(AXXLNAND, r0)
-
-		case AXXLOR: /* xxlorc, xxlnor, xxlor, xxlxor */
 			opset(AXXLORC, r0)
 			opset(AXXLNOR, r0)
 			opset(AXXLORQ, r0)
 			opset(AXXLXOR, r0)
+			opset(AXXLOR, r0)
+			opset(AXSMAXJDP, r0)
+			opset(AXSMINJDP, r0)
 
 		case AXXSEL: /* xxsel */
 			opset(AXXSEL, r0)
@@ -3448,23 +3449,13 @@ func asmout(c *ctxt9, p *obj.Prog, o *Optab, out *[5]uint32) {
 
 		o1 = AOP_RRR(OP_MTCRF, uint32(p.From.Reg), 0, 0) | uint32(v)<<12
 
-	case 70: /* [f]cmp r,r,cr*/
-		var r int
-		if p.Reg == 0 {
-			r = 0
+	case 70: /* cmp* r,r,cr or cmp*i r,i,cr or fcmp f,f,cr or cmpeqb r,r */
+		r := uint32(p.Reg&7) << 2
+		if p.To.Type == obj.TYPE_CONST {
+			o1 = AOP_IRR(c.opirr(p.As), r, uint32(p.From.Reg), uint32(uint16(p.To.Offset)))
 		} else {
-			r = (int(p.Reg) & 7) << 2
+			o1 = AOP_RRR(c.oprrr(p.As), r, uint32(p.From.Reg), uint32(p.To.Reg))
 		}
-		o1 = AOP_RRR(c.oprrr(p.As), uint32(r), uint32(p.From.Reg), uint32(p.To.Reg))
-
-	case 71: /* cmp[l] r,i,cr*/
-		var r int
-		if p.Reg == 0 {
-			r = 0
-		} else {
-			r = (int(p.Reg) & 7) << 2
-		}
-		o1 = AOP_RRR(c.opirr(p.As), uint32(r), uint32(p.From.Reg), 0) | uint32(c.regoff(&p.To))&0xffff
 
 	case 72: /* slbmte (Rb+Rs -> slb[Rb]) -> Rs, Rb */
 		o1 = AOP_RRR(c.oprrr(p.As), uint32(p.From.Reg), 0, uint32(p.To.Reg))
@@ -4769,6 +4760,10 @@ func (c *ctxt9) oprrr(a obj.As) uint32 {
 		return OPVXX3(60, 146, 0) /* xxlor - v2.06 */
 	case AXXLXOR:
 		return OPVXX3(60, 154, 0) /* xxlxor - v2.06 */
+	case AXSMINJDP:
+		return OPVXX3(60, 152, 0) /* xsminjdp - v3.0 */
+	case AXSMAXJDP:
+		return OPVXX3(60, 144, 0) /* xsmaxjdp - v3.0 */
 
 	case AXXSEL:
 		return OPVXX4(60, 3, 0) /* xxsel - v2.06 */

@@ -26,8 +26,8 @@ func (check *Checker) labels(body *syntax.BlockStmt) {
 		name := jmp.Label.Value
 		if alt := all.Lookup(name); alt != nil {
 			msg = "goto %s jumps into block"
-			alt.(*Label).used = true // avoid another error
 			code = JumpIntoBlock
+			alt.(*Label).used = true // avoid another error
 		} else {
 			msg = "label %s not declared"
 			code = UndeclaredLabel

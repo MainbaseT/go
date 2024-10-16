@@ -171,6 +171,18 @@ func dirList(w ResponseWriter, r *Request, f File) {
 	fmt.Fprintf(w, "</pre>\n")
 }
 
+// serveError serves an error from ServeFile, ServeFileFS, and ServeContent.
+// Because those can all be configured by the caller by setting headers like
+// Etag, Last-Modified, and Cache-Control to send on a successful response,
+// the error path needs to clear them, since they may not be meant for errors.
+func serveError(w ResponseWriter, text string, code int) {
+	h := w.Header()
+	h.Del("Etag")
+	h.Del("Last-Modified")
+	h.Del("Cache-Control")
+	Error(w, text, code)
+}
+
 // ServeContent replies to the request using the content in the
 // provided ReadSeeker. The main benefit of ServeContent over [io.Copy]
 // is that it handles Range requests properly, sets the MIME type, and
@@ -247,7 +259,7 @@ func serveContent(w ResponseWriter, r *Request, name string, modtime time.Time, 
 			ctype = DetectContentType(buf[:n])
 			_, err := content.Seek(0, io.SeekStart) // rewind to output whole file
 			if err != nil {
-				Error(w, "seeker can't seek", StatusInternalServerError)
+				serveError(w, "seeker can't seek", StatusInternalServerError)
 				return
 			}
 		}
@@ -258,12 +270,12 @@ func serveContent(w ResponseWriter, r *Request, name string, modtime time.Time, 
 
 	size, err := sizeFunc()
 	if err != nil {
-		Error(w, err.Error(), StatusInternalServerError)
+		serveError(w, err.Error(), StatusInternalServerError)
 		return
 	}
 	if size < 0 {
 		// Should never happen but just to be sure
-		Error(w, "negative content size computed", StatusInternalServerError)
+		serveError(w, "negative content size computed", StatusInternalServerError)
 		return
 	}
 
@@ -285,7 +297,7 @@ func serveContent(w ResponseWriter, r *Request, name string, modtime time.Time, 
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
 		fallthrough
 	default:
-		Error(w, err.Error(), StatusRequestedRangeNotSatisfiable)
+		serveError(w, err.Error(), StatusRequestedRangeNotSatisfiable)
 		return
 	}
 
@@ -311,7 +323,7 @@ func serveContent(w ResponseWriter, r *Request, name string, modtime time.Time, 
 		// multipart responses."
 		ra := ranges[0]
 		if _, err := content.Seek(ra.start, io.SeekStart); err != nil {
-			Error(w, err.Error(), StatusRequestedRangeNotSatisfiable)
+			serveError(w, err.Error(), StatusRequestedRangeNotSatisfiable)
 			return
 		}
 		sendSize = ra.length
@@ -644,7 +656,7 @@ func serveFile(w ResponseWriter, r *Request, fs FileSystem, name string, redirec
 	f, err := fs.Open(name)
 	if err != nil {
 		msg, code := toHTTPError(err)
-		Error(w, msg, code)
+		serveError(w, msg, code)
 		return
 	}
 	defer f.Close()
@@ -652,7 +664,7 @@ func serveFile(w ResponseWriter, r *Request, fs FileSystem, name string, redirec
 	d, err := f.Stat()
 	if err != nil {
 		msg, code := toHTTPError(err)
-		Error(w, msg, code)
+		serveError(w, msg, code)
 		return
 	}
 
@@ -670,7 +682,7 @@ func serveFile(w ResponseWriter, r *Request, fs FileSystem, name string, redirec
 			if base == "/" || base == "." {
 				// The FileSystem maps a path like "/" or "/./" to a file instead of a directory.
 				msg := "http: attempting to traverse a non-directory"
-				Error(w, msg, StatusInternalServerError)
+				serveError(w, msg, StatusInternalServerError)
 				return
 			}
 			localRedirect(w, r, "../"+base)
@@ -747,7 +759,7 @@ func localRedirect(w ResponseWriter, r *Request, newPath string) {
 // If the provided file or directory name is a relative path, it is
 // interpreted relative to the current directory and may ascend to
 // parent directories. If the provided name is constructed from user
-// input, it should be sanitized before calling ServeFile.
+// input, it should be sanitized before calling [ServeFile].
 //
 // As a precaution, ServeFile will reject requests where r.URL.Path
 // contains a ".." path element; this protects against callers who
@@ -769,7 +781,7 @@ func ServeFile(w ResponseWriter, r *Request, name string) {
 		// here and ".." may not be wanted.
 		// Note that name might not contain "..", for example if code (still
 		// incorrectly) used filepath.Join(myDir, r.URL.Path).
-		Error(w, "invalid URL path", StatusBadRequest)
+		serveError(w, "invalid URL path", StatusBadRequest)
 		return
 	}
 	dir, file := filepath.Split(name)
@@ -779,22 +791,20 @@ func ServeFile(w ResponseWriter, r *Request, name string) {
 // ServeFileFS replies to the request with the contents
 // of the named file or directory from the file system fsys.
 //
-// If the provided file or directory name is a relative path, it is
-// interpreted relative to the current directory and may ascend to
-// parent directories. If the provided name is constructed from user
-// input, it should be sanitized before calling [ServeFile].
+// If the provided name is constructed from user input, it should be
+// sanitized before calling [ServeFileFS].
 //
-// As a precaution, ServeFile will reject requests where r.URL.Path
+// As a precaution, ServeFileFS will reject requests where r.URL.Path
 // contains a ".." path element; this protects against callers who
 // might unsafely use [filepath.Join] on r.URL.Path without sanitizing
 // it and then use that filepath.Join result as the name argument.
 //
-// As another special case, ServeFile redirects any request where r.URL.Path
+// As another special case, ServeFileFS redirects any request where r.URL.Path
 // ends in "/index.html" to the same path, without the final
 // "index.html". To avoid such redirects either modify the path or
-// use ServeContent.
+// use [ServeContent].
 //
-// Outside of those two special cases, ServeFile does not use
+// Outside of those two special cases, ServeFileFS does not use
 // r.URL.Path for selecting the file or directory to serve; only the
 // file or directory provided in the name argument is used.
 func ServeFileFS(w ResponseWriter, r *Request, fsys fs.FS, name string) {
@@ -804,7 +814,7 @@ func ServeFileFS(w ResponseWriter, r *Request, fsys fs.FS, name string) {
 		// here and ".." may not be wanted.
 		// Note that name might not contain "..", for example if code (still
 		// incorrectly) used filepath.Join(myDir, r.URL.Path).
-		Error(w, "invalid URL path", StatusBadRequest)
+		serveError(w, "invalid URL path", StatusBadRequest)
 		return
 	}
 	serveFile(w, r, FS(fsys), name, false)

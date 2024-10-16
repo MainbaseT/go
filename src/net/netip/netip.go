@@ -14,12 +14,12 @@ package netip
 import (
 	"cmp"
 	"errors"
+	"internal/bytealg"
+	"internal/byteorder"
+	"internal/itoa"
 	"math"
 	"strconv"
-
-	"internal/bytealg"
-	"internal/intern"
-	"internal/itoa"
+	"unique"
 )
 
 // Sizes: (64-bit)
@@ -53,22 +53,22 @@ type Addr struct {
 	// bytewise processing.
 	addr uint128
 
-	// z is a combination of the address family and the IPv6 zone.
-	//
-	// nil means invalid IP address (for a zero Addr).
-	// z4 means an IPv4 address.
-	// z6noz means an IPv6 address without a zone.
-	//
-	// Otherwise it's the interned zone name string.
-	z *intern.Value
+	// Details about the address, wrapped up together and canonicalized.
+	z unique.Handle[addrDetail]
+}
+
+// addrDetail represents the details of an Addr, like address family and IPv6 zone.
+type addrDetail struct {
+	IsV6   bool   // IPv4 is false, IPv6 is true.
+	ZoneV6 string // != "" only if IsV6 is true.
 }
 
 // z0, z4, and z6noz are sentinel Addr.z values.
 // See the Addr type's field docs.
 var (
-	z0    = (*intern.Value)(nil)
-	z4    = new(intern.Value)
-	z6noz = new(intern.Value)
+	z0    unique.Handle[addrDetail]
+	z4    = unique.Make(addrDetail{})
+	z6noz = unique.Make(addrDetail{IsV6: true})
 )
 
 // IPv6LinkLocalAllNodes returns the IPv6 link-local all nodes multicast
@@ -102,8 +102,8 @@ func AddrFrom4(addr [4]byte) Addr {
 func AddrFrom16(addr [16]byte) Addr {
 	return Addr{
 		addr: uint128{
-			beUint64(addr[:8]),
-			beUint64(addr[8:]),
+			byteorder.BeUint64(addr[:8]),
+			byteorder.BeUint64(addr[8:]),
 		},
 		z: z6noz,
 	}
@@ -251,6 +251,10 @@ func parseIPv6(in string) (Addr, error) {
 			} else {
 				break
 			}
+			if off > 3 {
+				//more than 4 digits in group, fail.
+				return Addr{}, parseAddrError{in: in, msg: "each group must have 4 or less digits", at: s}
+			}
 			if acc > math.MaxUint16 {
 				// Overflow, fail.
 				return Addr{}, parseAddrError{in: in, msg: "IPv6 field has value >=2^16", at: s}
@@ -331,9 +335,7 @@ func parseIPv6(in string) (Addr, error) {
 		for j := i - 1; j >= ellipsis; j-- {
 			ip[j+n] = ip[j]
 		}
-		for j := ellipsis + n - 1; j >= ellipsis; j-- {
-			ip[j] = 0
-		}
+		clear(ip[ellipsis : ellipsis+n])
 	} else if ellipsis >= 0 {
 		// Ellipsis must represent at least one 0 group.
 		return Addr{}, parseAddrError{in: in, msg: "the :: must expand to at least one field of zeros"}
@@ -405,11 +407,10 @@ func (ip Addr) BitLen() int {
 
 // Zone returns ip's IPv6 scoped addressing zone, if any.
 func (ip Addr) Zone() string {
-	if ip.z == nil {
+	if ip.z == z0 {
 		return ""
 	}
-	zone, _ := ip.z.Get().(string)
-	return zone
+	return ip.z.Value().ZoneV6
 }
 
 // Compare returns an integer comparing two IPs.
@@ -494,7 +495,7 @@ func (ip Addr) WithZone(zone string) Addr {
 		ip.z = z6noz
 		return ip
 	}
-	ip.z = intern.GetByString(zone)
+	ip.z = unique.Make(addrDetail{IsV6: true, ZoneV6: zone})
 	return ip
 }
 
@@ -515,6 +516,10 @@ func (ip Addr) hasZone() bool {
 
 // IsLinkLocalUnicast reports whether ip is a link-local unicast address.
 func (ip Addr) IsLinkLocalUnicast() bool {
+	if ip.Is4In6() {
+		ip = ip.Unmap()
+	}
+
 	// Dynamic Configuration of IPv4 Link-Local Addresses
 	// https://datatracker.ietf.org/doc/html/rfc3927#section-2.1
 	if ip.Is4() {
@@ -530,6 +535,10 @@ func (ip Addr) IsLinkLocalUnicast() bool {
 
 // IsLoopback reports whether ip is a loopback address.
 func (ip Addr) IsLoopback() bool {
+	if ip.Is4In6() {
+		ip = ip.Unmap()
+	}
+
 	// Requirements for Internet Hosts -- Communication Layers (3.2.1.3 Addressing)
 	// https://datatracker.ietf.org/doc/html/rfc1122#section-3.2.1.3
 	if ip.Is4() {
@@ -545,6 +554,10 @@ func (ip Addr) IsLoopback() bool {
 
 // IsMulticast reports whether ip is a multicast address.
 func (ip Addr) IsMulticast() bool {
+	if ip.Is4In6() {
+		ip = ip.Unmap()
+	}
+
 	// Host Extensions for IP Multicasting (4. HOST GROUP ADDRESSES)
 	// https://datatracker.ietf.org/doc/html/rfc1112#section-4
 	if ip.Is4() {
@@ -563,7 +576,7 @@ func (ip Addr) IsMulticast() bool {
 func (ip Addr) IsInterfaceLocalMulticast() bool {
 	// IPv6 Addressing Architecture (2.7.1. Pre-Defined Multicast Addresses)
 	// https://datatracker.ietf.org/doc/html/rfc4291#section-2.7.1
-	if ip.Is6() {
+	if ip.Is6() && !ip.Is4In6() {
 		return ip.v6u16(0)&0xff0f == 0xff01
 	}
 	return false // zero value
@@ -571,6 +584,10 @@ func (ip Addr) IsInterfaceLocalMulticast() bool {
 
 // IsLinkLocalMulticast reports whether ip is a link-local multicast address.
 func (ip Addr) IsLinkLocalMulticast() bool {
+	if ip.Is4In6() {
+		ip = ip.Unmap()
+	}
+
 	// IPv4 Multicast Guidelines (4. Local Network Control Block (224.0.0/24))
 	// https://datatracker.ietf.org/doc/html/rfc5771#section-4
 	if ip.Is4() {
@@ -599,6 +616,10 @@ func (ip Addr) IsGlobalUnicast() bool {
 		return false
 	}
 
+	if ip.Is4In6() {
+		ip = ip.Unmap()
+	}
+
 	// Match package net's IsGlobalUnicast logic. Notably private IPv4 addresses
 	// and ULA IPv6 addresses are still considered "global unicast".
 	if ip.Is4() && (ip == IPv4Unspecified() || ip == AddrFrom4([4]byte{255, 255, 255, 255})) {
@@ -616,6 +637,10 @@ func (ip Addr) IsGlobalUnicast() bool {
 // ip is in 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, or fc00::/7. This is the
 // same as [net.IP.IsPrivate].
 func (ip Addr) IsPrivate() bool {
+	if ip.Is4In6() {
+		ip = ip.Unmap()
+	}
+
 	// Match the stdlib's IsPrivate logic.
 	if ip.Is4() {
 		// RFC 1918 allocates 10.0.0.0/8, 172.16.0.0/12, and 192.168.0.0/16 as
@@ -675,8 +700,8 @@ func (ip Addr) Prefix(b int) (Prefix, error) {
 // [Addr.Zone] method to get it).
 // The ip zero value returns all zeroes.
 func (ip Addr) As16() (a16 [16]byte) {
-	bePutUint64(a16[:8], ip.addr.hi)
-	bePutUint64(a16[8:], ip.addr.lo)
+	byteorder.BePutUint64(a16[:8], ip.addr.hi)
+	byteorder.BePutUint64(a16[8:], ip.addr.lo)
 	return a16
 }
 
@@ -685,7 +710,7 @@ func (ip Addr) As16() (a16 [16]byte) {
 // Note that 0.0.0.0 is not the zero Addr.
 func (ip Addr) As4() (a4 [4]byte) {
 	if ip.z == z4 || ip.Is4In6() {
-		bePutUint32(a4[:], uint32(ip.addr.lo))
+		byteorder.BePutUint32(a4[:], uint32(ip.addr.lo))
 		return a4
 	}
 	if ip.z == z0 {
@@ -701,12 +726,12 @@ func (ip Addr) AsSlice() []byte {
 		return nil
 	case z4:
 		var ret [4]byte
-		bePutUint32(ret[:], uint32(ip.addr.lo))
+		byteorder.BePutUint32(ret[:], uint32(ip.addr.lo))
 		return ret[:]
 	default:
 		var ret [16]byte
-		bePutUint64(ret[:8], ip.addr.hi)
-		bePutUint64(ret[8:], ip.addr.lo)
+		byteorder.BePutUint64(ret[:8], ip.addr.hi)
+		byteorder.BePutUint64(ret[8:], ip.addr.lo)
 		return ret[:]
 	}
 }
@@ -986,12 +1011,12 @@ func (ip Addr) marshalBinaryWithTrailingBytes(trailingBytes int) []byte {
 		b = make([]byte, trailingBytes)
 	case z4:
 		b = make([]byte, 4+trailingBytes)
-		bePutUint32(b, uint32(ip.addr.lo))
+		byteorder.BePutUint32(b, uint32(ip.addr.lo))
 	default:
 		z := ip.Zone()
 		b = make([]byte, 16+len(z)+trailingBytes)
-		bePutUint64(b[:8], ip.addr.hi)
-		bePutUint64(b[8:], ip.addr.lo)
+		byteorder.BePutUint64(b[:8], ip.addr.hi)
+		byteorder.BePutUint64(b[8:], ip.addr.lo)
 		copy(b[16:], z)
 	}
 	return b
@@ -1208,7 +1233,7 @@ func (p *AddrPort) UnmarshalText(text []byte) error {
 // containing the port in little-endian.
 func (p AddrPort) MarshalBinary() ([]byte, error) {
 	b := p.Addr().marshalBinaryWithTrailingBytes(2)
-	lePutUint16(b[len(b)-2:], p.Port())
+	byteorder.LePutUint16(b[len(b)-2:], p.Port())
 	return b, nil
 }
 
@@ -1223,7 +1248,7 @@ func (p *AddrPort) UnmarshalBinary(b []byte) error {
 	if err != nil {
 		return err
 	}
-	*p = AddrPortFrom(addr, leUint16(b[len(b)-2:]))
+	*p = AddrPortFrom(addr, byteorder.LeUint16(b[len(b)-2:]))
 	return nil
 }
 

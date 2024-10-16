@@ -22,7 +22,7 @@ import (
 	"reflect/internal/example1"
 	"reflect/internal/example2"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -6112,6 +6112,20 @@ func TestStructOfTooLarge(t *testing.T) {
 	}
 }
 
+func TestStructOfAnonymous(t *testing.T) {
+	var s any = struct{ D1 }{}
+	f := TypeOf(s).Field(0)
+	ds := StructOf([]StructField{f})
+	st := TypeOf(s)
+	dt := New(ds).Elem()
+	if st != dt.Type() {
+		t.Errorf("StructOf returned %s, want %s", dt.Type(), st)
+	}
+
+	// This should not panic.
+	_ = dt.Interface().(struct{ D1 })
+}
+
 func TestChanOf(t *testing.T) {
 	// check construction and use of type not in binary
 	type T string
@@ -6268,7 +6282,7 @@ func TestMapOfGCKeys(t *testing.T) {
 		for _, kv := range v.MapKeys() {
 			out = append(out, int(kv.Elem().Interface().(uintptr)))
 		}
-		sort.Ints(out)
+		slices.Sort(out)
 		for j, k := range out {
 			if k != i*n+j {
 				t.Errorf("lost x[%d][%d] = %d, want %d", i, j, k, i*n+j)
@@ -7847,7 +7861,7 @@ func iterateToString(it *MapIter) string {
 		line := fmt.Sprintf("%v: %v", it.Key(), it.Value())
 		got = append(got, line)
 	}
-	sort.Strings(got)
+	slices.Sort(got)
 	return "[" + strings.Join(got, ", ") + "]"
 }
 
@@ -8507,8 +8521,85 @@ func TestClear(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if !tc.testFunc(tc.value) {
-				t.Errorf("unexpected result for value.Clear(): %value", tc.value)
+				t.Errorf("unexpected result for value.Clear(): %v", tc.value)
 			}
 		})
 	}
+}
+
+func TestValuePointerAndUnsafePointer(t *testing.T) {
+	ptr := new(int)
+	ch := make(chan int)
+	m := make(map[int]int)
+	unsafePtr := unsafe.Pointer(ptr)
+	slice := make([]int, 1)
+	fn := func() {}
+	s := "foo"
+
+	tests := []struct {
+		name              string
+		val               Value
+		wantUnsafePointer unsafe.Pointer
+	}{
+		{"pointer", ValueOf(ptr), unsafe.Pointer(ptr)},
+		{"channel", ValueOf(ch), *(*unsafe.Pointer)(unsafe.Pointer(&ch))},
+		{"map", ValueOf(m), *(*unsafe.Pointer)(unsafe.Pointer(&m))},
+		{"unsafe.Pointer", ValueOf(unsafePtr), unsafePtr},
+		{"function", ValueOf(fn), **(**unsafe.Pointer)(unsafe.Pointer(&fn))},
+		{"slice", ValueOf(slice), unsafe.Pointer(unsafe.SliceData(slice))},
+		{"string", ValueOf(s), unsafe.Pointer(unsafe.StringData(s))},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.val.Pointer(); got != uintptr(tc.wantUnsafePointer) {
+				t.Errorf("unexpected uintptr result, got %#x, want %#x", got, uintptr(tc.wantUnsafePointer))
+			}
+			if got := tc.val.UnsafePointer(); got != tc.wantUnsafePointer {
+				t.Errorf("unexpected unsafe.Pointer result, got %#x, want %#x", got, tc.wantUnsafePointer)
+			}
+		})
+	}
+}
+
+// Test cases copied from ../../test/unsafebuiltins.go
+func TestSliceAt(t *testing.T) {
+	const maxUintptr = 1 << (8 * unsafe.Sizeof(uintptr(0)))
+	var p [10]byte
+
+	typ := TypeOf(p[0])
+
+	s := SliceAt(typ, unsafe.Pointer(&p[0]), len(p))
+	if s.Pointer() != uintptr(unsafe.Pointer(&p[0])) {
+		t.Fatalf("unexpected underlying array: %d, want: %d", s.Pointer(), uintptr(unsafe.Pointer(&p[0])))
+	}
+	if s.Len() != len(p) || s.Cap() != len(p) {
+		t.Fatalf("unexpected len or cap, len: %d, cap: %d, want: %d", s.Len(), s.Cap(), len(p))
+	}
+
+	typ = TypeOf(0)
+	if !SliceAt(typ, unsafe.Pointer((*int)(nil)), 0).IsNil() {
+		t.Fatal("nil pointer with zero length must return nil")
+	}
+
+	// nil pointer with positive length panics
+	shouldPanic("", func() { _ = SliceAt(typ, unsafe.Pointer((*int)(nil)), 1) })
+
+	// negative length
+	var neg int = -1
+	shouldPanic("", func() { _ = SliceAt(TypeOf(byte(0)), unsafe.Pointer(&p[0]), neg) })
+
+	// size overflows address space
+	n := uint64(0)
+	shouldPanic("", func() { _ = SliceAt(TypeOf(n), unsafe.Pointer(&n), maxUintptr/8) })
+	shouldPanic("", func() { _ = SliceAt(TypeOf(n), unsafe.Pointer(&n), maxUintptr/8+1) })
+
+	// sliced memory overflows address space
+	last := (*byte)(unsafe.Pointer(^uintptr(0)))
+	// This panics here, but won't panic in ../../test/unsafebuiltins.go,
+	// because unsafe.Slice(last, 1) does not escape.
+	//
+	// _ = SliceAt(typ, unsafe.Pointer(last), 1)
+	shouldPanic("", func() { _ = SliceAt(typ, unsafe.Pointer(last), 2) })
 }

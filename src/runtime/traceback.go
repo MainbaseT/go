@@ -8,6 +8,7 @@ import (
 	"internal/abi"
 	"internal/bytealg"
 	"internal/goarch"
+	"internal/stringslite"
 	"runtime/internal/sys"
 	"unsafe"
 )
@@ -182,8 +183,8 @@ func (u *unwinder) initAt(pc0, sp0, lr0 uintptr, gp *g, flags unwindFlags) {
 		}
 	}
 
-	// runtime/internal/atomic functions call into kernel helpers on
-	// arm < 7. See runtime/internal/atomic/sys_linux_arm.s.
+	// internal/runtime/atomic functions call into kernel helpers on
+	// arm < 7. See internal/runtime/atomic/sys_linux_arm.s.
 	//
 	// Start in the caller's frame.
 	if GOARCH == "arm" && goarm < 7 && GOOS == "linux" && frame.pc&0xffff0000 == 0xffff0000 {
@@ -632,8 +633,11 @@ func tracebackPCs(u *unwinder, skip int, pcBuf []uintptr) int {
 				skip--
 			} else {
 				// Callers expect the pc buffer to contain return addresses
-				// and do the -1 themselves, so we add 1 to the call PC to
-				// create a return PC.
+				// and do the -1 themselves, so we add 1 to the call pc to
+				// create a "return pc". Since there is no actual call, here
+				// "return pc" just means a pc you subtract 1 from to get
+				// the pc of the "call". The actual no-op we insert may or
+				// may not be 1 byte.
 				pcBuf[n] = uf.pc + 1
 				n++
 			}
@@ -993,24 +997,12 @@ func traceback2(u *unwinder, showRuntime bool, skip, max int) (n, lastN int) {
 			}
 			print(")\n")
 			print("\t", file, ":", line)
-			// The contract between Callers and CallersFrames uses
-			// return addresses, which are +1 relative to the CALL
-			// instruction. Follow that convention.
-			pc := uf.pc + 1
-			if !iu.isInlined(uf) && pc > f.entry() {
-				// Func-relative PCs make no sense for inlined
-				// frames because there is no actual entry.
-				print(" +", hex(pc-f.entry()))
-			}
-			if gp.m != nil && gp.m.throwing >= throwTypeRuntime && gp == gp.m.curg || level >= 2 {
-				if !iu.isInlined(uf) {
-					// The stack information makes no sense for inline frames.
-					print(" fp=", hex(u.frame.fp), " sp=", hex(u.frame.sp), " pc=", hex(pc))
-				} else {
-					// The PC for an inlined frame is a special marker NOP,
-					// but crash monitoring tools may still parse the PCs
-					// and feed them to CallersFrames.
-					print(" pc=", hex(pc))
+			if !iu.isInlined(uf) {
+				if u.frame.pc > f.entry() {
+					print(" +", hex(u.frame.pc-f.entry()))
+				}
+				if gp.m != nil && gp.m.throwing >= throwTypeRuntime && gp == gp.m.curg || level >= 2 {
+					print(" fp=", hex(u.frame.fp), " sp=", hex(u.frame.sp), " pc=", hex(u.frame.pc))
 				}
 			}
 			print("\n")
@@ -1087,6 +1079,16 @@ func printAncestorTracebackFuncInfo(f funcInfo, pc uintptr) {
 	print("\n")
 }
 
+// callers should be an internal detail,
+// (and is almost identical to Callers),
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/phuslu/log
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname callers
 func callers(skip int, pcbuf []uintptr) int {
 	sp := getcallersp()
 	pc := getcallerpc()
@@ -1140,7 +1142,7 @@ func showfuncinfo(sf srcFunc, firstFrame bool, calleeID abi.FuncID) bool {
 		return true
 	}
 
-	return bytealg.IndexByteString(name, '.') >= 0 && (!hasPrefix(name, "runtime.") || isExportedRuntime(name))
+	return bytealg.IndexByteString(name, '.') >= 0 && (!stringslite.HasPrefix(name, "runtime.") || isExportedRuntime(name))
 }
 
 // isExportedRuntime reports whether name is an exported runtime function.
@@ -1351,7 +1353,7 @@ func isSystemGoroutine(gp *g, fixed bool) bool {
 		}
 		return fingStatus.Load()&fingRunningFinalizer == 0
 	}
-	return hasPrefix(funcname(f), "runtime.")
+	return stringslite.HasPrefix(funcname(f), "runtime.")
 }
 
 // SetCgoTraceback records three C functions to use to gather

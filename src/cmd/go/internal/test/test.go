@@ -353,6 +353,7 @@ profile the tests during execution:
 
 	-benchmem
 	    Print memory allocation statistics for benchmarks.
+	    Allocations made in C or using C.malloc are not counted.
 
 	-blockprofile block.out
 	    Write a goroutine blocking profile to the specified file
@@ -836,7 +837,7 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 	// Read testcache expiration time, if present.
 	// (We implement go clean -testcache by writing an expiration date
 	// instead of searching out and deleting test result cache entries.)
-	if dir := cache.DefaultDir(); dir != "off" {
+	if dir, _ := cache.DefaultDir(); dir != "off" {
 		if data, _ := lockedfile.Read(filepath.Join(dir, "testexpire.txt")); len(data) > 0 && data[len(data)-1] == '\n' {
 			if t, err := strconv.ParseInt(string(data[:len(data)-1]), 10, 64); err == nil {
 				testCacheExpire = time.Unix(0, t)
@@ -1404,7 +1405,7 @@ func (r *runTestActor) Act(b *work.Builder, ctx context.Context, a *work.Action)
 
 	if p := a.Package; len(p.TestGoFiles)+len(p.XTestGoFiles) == 0 {
 		reportNoTestFiles := true
-		if cfg.BuildCover && cfg.Experiment.CoverageRedesign {
+		if cfg.BuildCover && cfg.Experiment.CoverageRedesign && p.Internal.Cover.GenMeta {
 			if err := sh.Mkdir(a.Objdir); err != nil {
 				return err
 			}
@@ -1859,6 +1860,8 @@ var testlogMagic = []byte("# test log\n") // known to testing/internal/testdeps/
 func computeTestInputsID(a *work.Action, testlog []byte) (cache.ActionID, error) {
 	testlog = bytes.TrimPrefix(testlog, testlogMagic)
 	h := cache.NewHash("testInputs")
+	// The runtime always looks at GODEBUG, without telling us in the testlog.
+	fmt.Fprintf(h, "env GODEBUG %x\n", hashGetenv("GODEBUG"))
 	pwd := a.Package.Dir
 	for _, line := range bytes.Split(testlog, []byte("\n")) {
 		if len(line) == 0 {

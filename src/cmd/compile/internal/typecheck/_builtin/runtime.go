@@ -117,8 +117,8 @@ func interfaceSwitch(s *byte, t *byte) (int, *byte)
 func ifaceeq(tab *uintptr, x, y unsafe.Pointer) (ret bool)
 func efaceeq(typ *uintptr, x, y unsafe.Pointer) (ret bool)
 
-// panic for iteration after exit in range func
-func panicrangeexit()
+// panic for various rangefunc iterator errors
+func panicrangestate(state int)
 
 // defer in range over func
 func deferrangefunc() interface{}
@@ -161,6 +161,7 @@ func chanrecv2(hchan <-chan any, elem *any) bool
 func chansend1(hchan chan<- any, elem *any)
 func closechan(hchan chan<- any)
 func chanlen(hchan any) int
+func chancap(hchan any) int
 
 var writeBarrier struct {
 	enabled bool

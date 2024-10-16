@@ -271,11 +271,6 @@ Below is the full list of supported metrics, ordered lexicographically.
 		The number of non-default behaviors executed by the go/build
 		package due to a non-default GODEBUG=installgoroot=... setting.
 
-	/godebug/non-default-behavior/jstmpllitinterp:events
-		The number of non-default behaviors executed by
-		the html/template package due to a non-default
-		GODEBUG=jstmpllitinterp=... setting.
-
 	/godebug/non-default-behavior/multipartmaxheaders:events
 		The number of non-default behaviors executed by
 		the mime/multipart package due to a non-default
@@ -307,6 +302,10 @@ Below is the full list of supported metrics, ordered lexicographically.
 		The number of non-default behaviors executed by the crypto/tls
 		package due to a non-default GODEBUG=tls10server=... setting.
 
+	/godebug/non-default-behavior/tls3des:events
+		The number of non-default behaviors executed by the crypto/tls
+		package due to a non-default GODEBUG=tls3des=... setting.
+
 	/godebug/non-default-behavior/tlsmaxrsasize:events
 		The number of non-default behaviors executed by the crypto/tls
 		package due to a non-default GODEBUG=tlsmaxrsasize=... setting.
@@ -318,6 +317,29 @@ Below is the full list of supported metrics, ordered lexicographically.
 	/godebug/non-default-behavior/tlsunsafeekm:events
 		The number of non-default behaviors executed by the crypto/tls
 		package due to a non-default GODEBUG=tlsunsafeekm=... setting.
+
+	/godebug/non-default-behavior/winreadlinkvolume:events
+		The number of non-default behaviors executed by the os package
+		due to a non-default GODEBUG=winreadlinkvolume=... setting.
+
+	/godebug/non-default-behavior/winsymlink:events
+		The number of non-default behaviors executed by the os package
+		due to a non-default GODEBUG=winsymlink=... setting.
+
+	/godebug/non-default-behavior/x509keypairleaf:events
+		The number of non-default behaviors executed by the crypto/tls
+		package due to a non-default GODEBUG=x509keypairleaf=...
+		setting.
+
+	/godebug/non-default-behavior/x509negativeserial:events
+		The number of non-default behaviors executed by the crypto/x509
+		package due to a non-default GODEBUG=x509negativeserial=...
+		setting.
+
+	/godebug/non-default-behavior/x509seriallength:events
+		The number of non-default behaviors executed by the crypto/x509
+		package due to a non-default GODEBUG=x509seriallength=...
+		setting.
 
 	/godebug/non-default-behavior/x509sha1:events
 		The number of non-default behaviors executed by the crypto/x509

@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"internal/buildcfg"
 	. "internal/types/errors"
 )
 
@@ -242,7 +243,7 @@ loop:
 			// the syntactic information. We should consider storing
 			// this information explicitly in the object.
 			var alias bool
-			if check.enableAlias {
+			if check.conf._EnableAlias {
 				alias = obj.IsAlias()
 			} else {
 				if d := check.objMap[obj]; d != nil {
@@ -314,7 +315,7 @@ func (check *Checker) cycleError(cycle []Object, start int) {
 	if tname != nil && tname.IsAlias() {
 		// If we use Alias nodes, it is initialized with Typ[Invalid].
 		// TODO(gri) Adjust this code if we initialize with nil.
-		if !check.enableAlias {
+		if !check.conf._EnableAlias {
 			check.validAlias(tname, Typ[Invalid])
 		}
 	}
@@ -583,15 +584,24 @@ func (check *Checker) typeDecl(obj *TypeName, tdecl *ast.TypeSpec, def *TypeName
 			versionErr = true
 		}
 
-		if check.enableAlias {
+		if check.conf._EnableAlias {
 			// TODO(gri) Should be able to use nil instead of Typ[Invalid] to mark
 			//           the alias as incomplete. Currently this causes problems
 			//           with certain cycles. Investigate.
+			//
+			// NOTE(adonovan): to avoid the Invalid being prematurely observed
+			// by (e.g.) a var whose type is an unfinished cycle,
+			// Unalias does not memoize if Invalid. Perhaps we should use a
+			// special sentinel distinct from Invalid.
 			alias := check.newAlias(obj, Typ[Invalid])
 			setDefType(def, alias)
 
 			// handle type parameters even if not allowed (Alias type is supported)
 			if tparam0 != nil {
+				if !versionErr && !buildcfg.Experiment.AliasTypeParams {
+					check.error(tdecl, UnsupportedFeature, "generic type alias requires GOEXPERIMENT=aliastypeparams")
+					versionErr = true
+				}
 				check.openScope(tdecl, "type parameters")
 				defer check.closeScope()
 				check.collectTypeParams(&alias.tparams, tdecl.TypeParams)
@@ -602,8 +612,15 @@ func (check *Checker) typeDecl(obj *TypeName, tdecl *ast.TypeSpec, def *TypeName
 			alias.fromRHS = rhs
 			Unalias(alias) // resolve alias.actual
 		} else {
+			// With Go1.23, the default behavior is to use Alias nodes,
+			// reflected by check.enableAlias. Signal non-default behavior.
+			//
+			// TODO(gri) Testing runs tests in both modes. Do we need to exclude
+			//           tracking of non-default behavior for tests?
+			gotypesalias.IncNonDefault()
+
 			if !versionErr && tparam0 != nil {
-				check.error(tdecl, UnsupportedFeature, "generic type alias requires GODEBUG=gotypesalias=1")
+				check.error(tdecl, UnsupportedFeature, "generic type alias requires GODEBUG=gotypesalias=1 or unset")
 				versionErr = true
 			}
 

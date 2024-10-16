@@ -12,13 +12,15 @@ import (
 	"net/netip"
 	"reflect"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+var goResolver = Resolver{PreferGo: true}
 
 func hasSuffixFold(s, suffix string) bool {
 	return strings.HasSuffix(strings.ToLower(s), strings.ToLower(suffix))
@@ -426,7 +428,7 @@ func TestLookupLongTXT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(txts)
+	slices.Sort(txts)
 	want := []string{
 		strings.Repeat("abcdefghijklmnopqrstuvwxyABCDEFGHJIKLMNOPQRSTUVWXY", 10),
 		"gophers rule",
@@ -1628,5 +1630,35 @@ func TestLookupNoSuchHost(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestDNSErrorUnwrap(t *testing.T) {
+	if runtime.GOOS == "plan9" {
+		// The Plan 9 implementation of the resolver doesn't use the Dial function yet. See https://go.dev/cl/409234
+		t.Skip("skipping on plan9")
+	}
+	rDeadlineExcceeded := &Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (Conn, error) {
+		return nil, context.DeadlineExceeded
+	}}
+	rCancelled := &Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (Conn, error) {
+		return nil, context.Canceled
+	}}
+
+	_, err := rDeadlineExcceeded.LookupHost(context.Background(), "test.go.dev")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("errors.Is(err, context.DeadlineExceeded) = false; want = true")
+	}
+
+	_, err = rCancelled.LookupHost(context.Background(), "test.go.dev")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false; want = true")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = goResolver.LookupHost(ctx, "text.go.dev")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false; want = true")
 	}
 }

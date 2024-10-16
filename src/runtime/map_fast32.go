@@ -50,6 +50,15 @@ func mapaccess1_fast32(t *maptype, h *hmap, key uint32) unsafe.Pointer {
 	return unsafe.Pointer(&zeroVal[0])
 }
 
+// mapaccess2_fast32 should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/ugorji/go/codec
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname mapaccess2_fast32
 func mapaccess2_fast32(t *maptype, h *hmap, key uint32) (unsafe.Pointer, bool) {
 	if raceenabled && h != nil {
 		callerpc := getcallerpc()
@@ -90,6 +99,17 @@ func mapaccess2_fast32(t *maptype, h *hmap, key uint32) (unsafe.Pointer, bool) {
 	return unsafe.Pointer(&zeroVal[0]), false
 }
 
+// mapassign_fast32 should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/bytedance/sonic
+//   - github.com/cloudwego/frugal
+//   - github.com/ugorji/go/codec
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname mapassign_fast32
 func mapassign_fast32(t *maptype, h *hmap, key uint32) unsafe.Pointer {
 	if h == nil {
 		panic(plainError("assignment to entry in nil map"))
@@ -180,6 +200,15 @@ done:
 	return elem
 }
 
+// mapassign_fast32ptr should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/ugorji/go/codec
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname mapassign_fast32ptr
 func mapassign_fast32ptr(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer {
 	if h == nil {
 		panic(plainError("assignment to entry in nil map"))
@@ -302,13 +331,13 @@ search:
 			// Only clear key if there are pointers in it.
 			// This can only happen if pointers are 32 bit
 			// wide as 64 bit pointers do not fit into a 32 bit key.
-			if goarch.PtrSize == 4 && t.Key.PtrBytes != 0 {
+			if goarch.PtrSize == 4 && t.Key.Pointers() {
 				// The key must be a pointer as we checked pointers are
 				// 32 bits wide and the key is 32 bits wide also.
 				*(*unsafe.Pointer)(k) = nil
 			}
 			e := add(unsafe.Pointer(b), dataOffset+abi.MapBucketCount*4+i*uintptr(t.ValueSize))
-			if t.Elem.PtrBytes != 0 {
+			if t.Elem.Pointers() {
 				memclrHasPointers(e, t.Elem.Size_)
 			} else {
 				memclrNoHeapPointers(e, t.Elem.Size_)
@@ -428,7 +457,7 @@ func evacuate_fast32(t *maptype, h *hmap, oldbucket uintptr) {
 				dst.b.tophash[dst.i&(abi.MapBucketCount-1)] = top // mask dst.i as an optimization, to avoid a bounds check
 
 				// Copy key.
-				if goarch.PtrSize == 4 && t.Key.PtrBytes != 0 && writeBarrier.enabled {
+				if goarch.PtrSize == 4 && t.Key.Pointers() && writeBarrier.enabled {
 					// Write with a write barrier.
 					*(*unsafe.Pointer)(dst.k) = *(*unsafe.Pointer)(k)
 				} else {
@@ -446,7 +475,7 @@ func evacuate_fast32(t *maptype, h *hmap, oldbucket uintptr) {
 			}
 		}
 		// Unlink the overflow buckets & clear key/elem to help GC.
-		if h.flags&oldIterator == 0 && t.Bucket.PtrBytes != 0 {
+		if h.flags&oldIterator == 0 && t.Bucket.Pointers() {
 			b := add(h.oldbuckets, oldbucket*uintptr(t.BucketSize))
 			// Preserve b.tophash because the evacuation
 			// state is maintained there.

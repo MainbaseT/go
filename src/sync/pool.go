@@ -242,6 +242,16 @@ func (p *Pool) pinSlow() (*poolLocal, int) {
 	return &local[pid], pid
 }
 
+// poolCleanup should be an internal detail,
+// but widely used packages access it using linkname.
+// Notable members of the hall of shame include:
+//   - github.com/bytedance/gopkg
+//   - github.com/songzhibin97/gkit
+//
+// Do not remove or change the type signature.
+// See go.dev/issue/67401.
+//
+//go:linkname poolCleanup
 func poolCleanup() {
 	// This function is called with the world stopped, at the beginning of a garbage collection.
 	// It must not allocate and probably should not call any runtime functions.
@@ -295,12 +305,12 @@ func runtime_registerPoolCleanup(cleanup func())
 func runtime_procPin() int
 func runtime_procUnpin()
 
-// The below are implemented in runtime/internal/atomic and the
+// The below are implemented in internal/runtime/atomic and the
 // compiler also knows to intrinsify the symbol we linkname into this
 // package.
 
-//go:linkname runtime_LoadAcquintptr runtime/internal/atomic.LoadAcquintptr
+//go:linkname runtime_LoadAcquintptr internal/runtime/atomic.LoadAcquintptr
 func runtime_LoadAcquintptr(ptr *uintptr) uintptr
 
-//go:linkname runtime_StoreReluintptr runtime/internal/atomic.StoreReluintptr
+//go:linkname runtime_StoreReluintptr internal/runtime/atomic.StoreReluintptr
 func runtime_StoreReluintptr(ptr *uintptr, val uintptr) uintptr
